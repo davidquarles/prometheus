@@ -6,7 +6,7 @@ CI/CD status with concourse: https://concourse.outreach.cloud/teams/devs/pipelin
 
 ## Alertmanager Config
 
-Currently, our Alertmanager receivers and routes are stored in the `deploy/prometheus/alertmanager-alerting` secret in Vault. To add configuration to this, the following steps are recommended:
+Currently, our Alertmanager receivers and routes are stored in the `deploy/prometheus/configs/alertmanager` secret in Vault. To add configuration to this, the following steps are recommended:
 
 1. Login to Vault and navigate to the designated path.
 2. Copy the `alertmanager.yml` value.
