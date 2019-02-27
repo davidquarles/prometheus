@@ -1,0 +1,10 @@
+platform: linux
+
+inputs:
+  - name: source
+
+params:
+  APP_DIR: ./source
+
+run:
+  path: source/ci_cd/concourse/bin/test.sh
