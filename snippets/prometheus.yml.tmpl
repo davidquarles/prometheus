@@ -1,0 +1,285 @@
+global:
+  external_labels:
+    monitor: prometheus
+    replica: '$(HOSTNAME)'
+
+scrape_configs:
+- job_name: prometheus
+  static_configs:
+    - targets:
+      - "127.0.0.1:9090"
+
+- job_name: 'kubernetes_nodes_masters_etcd'
+  scheme: https
+  tls_config:
+    insecure_skip_verify: true
+
+  kubernetes_sd_configs:
+  - role: node
+  relabel_configs:
+  - action: keep
+    source_labels: [__meta_kubernetes_node_label_kubernetes_io_role]
+    regex: master
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(.+)
+  - source_labels: [__address__]
+    target_label: __address__
+    regex: "([^:]+):.+"
+    replacement: "${1}:4001"
+  - target_label: job
+    replacement: "etcd"
+
+- job_name: 'kubernetes_nodes_masters_etcd-events'
+  scheme: https
+  tls_config:
+    insecure_skip_verify: true
+
+  kubernetes_sd_configs:
+  - role: node
+  relabel_configs:
+  - action: keep
+    source_labels: [__meta_kubernetes_node_label_kubernetes_io_role]
+    regex: master
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(.+)
+  - source_labels: [__address__]
+    target_label: __address__
+    regex: "([^:]+):.+"
+    replacement: "${1}:4002"
+  - target_label: job
+    replacement: "etcd-events"
+
+- job_name: kubernetes-apiservers
+  scheme: https
+
+  kubernetes_sd_configs:
+  - role: endpoints
+
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: true
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+    action: keep
+    regex: default;kubernetes;https
+
+- job_name: kubernetes-nodes
+  scheme: https
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+  kubernetes_sd_configs:
+  - role: node
+
+  relabel_configs:
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(.+)
+  - target_label: __address__
+    replacement: kubernetes.default.svc:443
+  - source_labels: [__meta_kubernetes_node_name]
+    regex: (.+)
+    target_label: __metrics_path__
+    replacement: /api/v1/nodes/${1}/proxy/metrics
+
+- job_name: kubernetes-cadvisor
+  scheme: https
+
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+  kubernetes_sd_configs:
+  - role: node
+
+  relabel_configs:
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(.+)
+  - target_label: __address__
+    replacement: kubernetes.default.svc:443
+  - source_labels: [__meta_kubernetes_node_name]
+    regex: (.+)
+    target_label: __metrics_path__
+    replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+- job_name: kubernetes-service-endpoints
+  kubernetes_sd_configs:
+  - role: endpoints
+
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+    action: keep
+    regex: true
+  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+    action: replace
+    target_label: __scheme__
+    regex: (https?)
+  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+    action: replace
+    target_label: __metrics_path__
+    regex: (.+)
+  - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+    action: replace
+    target_label: __address__
+    regex: ([^:]+)(?::\d+)?;(\d+)
+    replacement: $1:$2
+  - action: labelmap
+    regex: __meta_kubernetes_service_label_(.+)
+  - source_labels: [__meta_kubernetes_namespace]
+    action: replace
+    target_label: kubernetes_namespace
+  - source_labels: [__meta_kubernetes_service_name]
+    action: replace
+    target_label: kubernetes_name
+
+  metric_relabel_configs:
+
+  # supports joins to node-exporter metrics
+  - source_labels: [kubernetes_name, node]
+    regex: 'kube-state-metrics;(.+)'
+    target_label: instance
+
+  # supports joins to cadvisor metrics
+  - source_labels: [kubernetes_name, pod]
+    regex: 'kube-state-metrics;(.+)'
+    target_label: pod_name
+
+  # supports label-based, workload-level queries
+  - action: labelmap
+    regex: label(_k8s|)_app
+    replacement: app
+
+  # supports owner-based, workload-level queries
+  - source_labels: [kubernetes_name, __name__, owner_kind, owner_name]
+    regex: 'kube-state-metrics;kube_pod_owner;(.+);(.+)'
+    replacement: '$1/$2'
+    target_label: owner
+
+  # supports owner-based queries targeting the parent deployment
+  - source_labels: [kubernetes_name, __name__, owner_kind, owner_name]
+    regex: 'kube-state-metrics;kube_pod_owner;ReplicaSet;(.+)-(.+)'
+    replacement: 'Deployment/$1'
+    target_label: owner
+
+- job_name: kubernetes-services
+  metrics_path: /probe
+  params:
+    module: [http_2xx]
+
+  kubernetes_sd_configs:
+  - role: service
+
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_probe]
+    action: keep
+    regex: true
+  - source_labels: [__address__]
+    target_label: __param_target
+  - target_label: __address__
+    replacement: blackbox-exporter.example.com:9115
+  - source_labels: [__param_target]
+    target_label: instance
+  - action: labelmap
+    regex: __meta_kubernetes_service_label_(.+)
+  - source_labels: [__meta_kubernetes_namespace]
+    target_label: kubernetes_namespace
+  - source_labels: [__meta_kubernetes_service_name]
+    target_label: kubernetes_name
+
+- job_name: kubernetes-ingresses
+  metrics_path: /probe
+  params:
+    module: [http_2xx]
+
+  kubernetes_sd_configs:
+  - role: ingress
+
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_ingress_annotation_prometheus_io_probe]
+    action: keep
+    regex: true
+  - source_labels: [__meta_kubernetes_ingress_scheme,__address__,__meta_kubernetes_ingress_path]
+    regex: (.+);(.+);(.+)
+    replacement: ${1}://${2}${3}
+    target_label: __param_target
+  - target_label: __address__
+    replacement: blackbox-exporter.example.com:9115
+  - source_labels: [__param_target]
+    target_label: instance
+  - action: labelmap
+    regex: __meta_kubernetes_ingress_label_(.+)
+  - source_labels: [__meta_kubernetes_namespace]
+    target_label: kubernetes_namespace
+  - source_labels: [__meta_kubernetes_ingress_name]
+    target_label: kubernetes_name
+
+- job_name: kubernetes-pods
+  kubernetes_sd_configs:
+  - role: pod
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+    action: keep
+    regex: true
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+    action: replace
+    target_label: __metrics_path__
+    regex: (.+)
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_format]
+    action: replace
+    target_label: __param_format
+    regex: (.+)
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
+    action: replace
+    target_label: __scheme__
+    regex: (https?)
+  - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+    action: replace
+    regex: (.+?)(?::\d+)?;(\d+)
+    replacement: ${1}:${2}
+    target_label: __address__
+  - action: labelmap
+    regex: __meta_kubernetes_pod_label_(.+)
+  - source_labels: [__meta_kubernetes_namespace]
+    action: replace
+    target_label: kubernetes_namespace
+  - source_labels: [__meta_kubernetes_pod_name]
+    action: replace
+    target_label: kubernetes_pod_name
+
+# Scrapes the endpoint lists for the main Prometheus endpoints
+- job_name: prometheus-endpoints
+  kubernetes_sd_configs:
+  - role: endpoints
+  relabel_configs:
+  - action: keep
+    source_labels: [__meta_kubernetes_service_label_app]
+    regex: prometheus
+  - action: replace
+    source_labels: [__meta_kubernetes_service_label_app]
+    target_label: job
+  - action: replace
+    target_label: prometheus
+    source_labels: [__meta_kubernetes_service_label_prometheus]
+
+#remote_write:
+#- url: http://wavefront-adapter:1234/receive
+#  queue_config:
+#    # Number of samples to buffer per shard before we start dropping them.
+#    capacity: 10000
+#    # Maximum number of shards, i.e. amount of concurrency.
+#    max_shards: 1000
+#    # Minimum number of shards, i.e. amount of concurrency.
+#    # NOTE: Our version of prometheus does not allow configuring this.
+#    # min_shards: 1
+#    # Maximum number of samples per send.
+#    max_samples_per_send: 100
+#    # Maximum time a sample will wait in buffer.
+#    batch_send_deadline: 5s
+#    # Maximum number of times to retry a batch on recoverable errors.
+#    max_retries: 3
+#    # Initial retry delay. Gets doubled for every retry.
+#    min_backoff: 30ms
+#    # Maximum retry delay.
+#    max_backoff: 100ms

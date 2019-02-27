@@ -1,0 +1,112 @@
+groups:
+
+- name: pod-info
+  rules:
+  # used by *-aggregates below
+  - record: kube_pod_info_ex
+    expr: |
+      label_replace(
+        kube_pod_labels
+        * on(namespace, pod) group_left(host_ip, node, pod_ip)
+        kube_pod_info{host_ip=~".+",pod_ip=~".+"}
+        * on(namespace, pod) group_left (owner_is_controller, owner, owner_kind, owner_name)
+        kube_pod_owner{owner_is_controller="<none>"},
+        "owner", "$0", "app", ".*"
+      )
+      or on (namespace, pod)(
+        kube_pod_labels
+        * on(namespace, pod) group_left(host_ip, node, pod_ip)
+        kube_pod_info{host_ip=~".+",pod_ip=~".+"}
+        * on(namespace, pod) group_left (owner_is_controller, owner, owner_kind, owner_name)
+        kube_pod_owner{owner_is_controller="true",owner=~".+"}
+      )
+
+- name: pod-aggregates
+  rules:
+  - record: pod_memory_usage_bytes
+    expr: |
+      kube_pod_info_ex
+      * on (namespace, pod_name) group_left
+      sum by (namespace, pod_name)(container_memory_usage_bytes)
+  - record: pod_spec_memory_limit_bytes
+    expr: |
+      kube_pod_info_ex
+      * on (namespace, pod_name) group_left
+      sum by (namespace, pod_name)(container_spec_memory_limit_bytes)
+  # i thought cadvisor exposed requests?
+  # this metric simply doesn't have series where requests don't exist
+  # hence the hacky final `or kube_pod_info_ex > bool 1`
+  - record: pod_spec_memory_request_bytes
+    expr: |
+      kube_pod_info_ex
+      * on (namespace, pod_name) group_left
+      sum by (namespace, pod_name)(kube_pod_container_resource_requests_memory_bytes)
+      or on (namespace, pod_name)
+      kube_pod_info_ex > bool 1
+  - record: pod_cpu_usage_cores
+    expr: |
+      kube_pod_info_ex
+      * on (namespace, pod_name) group_left
+      sum by (namespace, pod_name)(rate(container_cpu_usage_seconds_total{container_name!="POD"}[2m]))
+  - record: pod_spec_cpu_request
+    expr: |
+      kube_pod_info_ex
+      * on (namespace, pod_name) group_left
+      sum by (namespace, pod_name)(container_spec_cpu_shares{container_name!="POD"} / 1000)
+  - record: pod_spec_cpu_limit
+    expr: |
+      kube_pod_info_ex
+      * on (namespace, pod_name) group_left
+      sum by (namespace, pod_name)(container_spec_cpu_quota / container_spec_cpu_period{container_name!="POD"})
+
+- name: grpc-client-aggregates
+  rules:
+  # primarily here to serve etcd dashboards/alerts
+  - record: service_method_instance:grpc_client_started_total:rate_1m
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_started_total[1m]))
+  - record: service_method_instance:grpc_client_started_total:rate_5m
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_started_total[5m]))
+  - record: service_method_instance:grpc_client_started_total:rate_15m
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_started_total[15m]))
+  - record: service_method_instance:grpc_client_started_total:rate_1h
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_started_total[1h]))
+  - record: service_method_instance:grpc_client_started_total:rate_1d
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_started_total[1d]))
+
+  - record: service_method_instance:grpc_client_handled_total:rate_1m
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_handled_total[1m]))
+  - record: service_method_instance:grpc_client_handled_total:rate_5m
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_handled_total[5m]))
+  - record: service_method_instance:grpc_client_handled_total:rate_15m
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_handled_total[15m]))
+  - record: service_method_instance:grpc_client_handled_total:rate_1h
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_handled_total[1h]))
+  - record: service_method_instance:grpc_client_handled_total:rate_1d
+    expr: sum by (grpc_service, grpc_method, instance)(rate(grpc_client_handled_total[1d]))
+
+# FIXME: we can and maybe should split these into separate groups for parallel execution?
+- name: envoy-aggregates
+  rules:
+  - record: envoy_cluster_name:envoy_cluster_upstream_rq_total:sum_irate5m
+    expr: sum by (envoy_cluster_name)(irate(envoy_cluster_upstream_rq_total[5m]))
+  - record: envoy_cluster_name:envoy_cluster_upstream_cx_active
+    expr: sum by (envoy_cluster_name)(envoy_cluster_upstream_cx_active)
+  - record: envoy_response_code:envoy_cluster_upstream_rq:count
+    expr: count by (envoy_response_code)(envoy_cluster_upstream_rq)
+  - record: envoy_cluster_name:envoy_cluster_upstream_cx_rx_bytes_total:sum_irate5m
+    expr: sum by (envoy_cluster_name)(irate(envoy_cluster_upstream_cx_rx_bytes_total[5m]))
+  - record: envoy_cluster_name:envoy_cluster_upstream_cx_tx_bytes_total:sum_irate5m
+    expr: sum by (envoy_cluster_name)(irate(envoy_cluster_upstream_cx_tx_bytes_total[5m]))
+  - record: envoy_http_conn_manager_prefix:envoy_http_downstream_cx_rx_bytes_total:sum_irate5m
+    expr: sum by (envoy_http_conn_manager_prefix)(irate(envoy_http_downstream_cx_rx_bytes_total[5m]))
+  - record: envoy_http_conn_manager_prefix:envoy_http_downstream_cx_tx_bytes_total:sum_irate5m
+    expr: sum by (envoy_http_conn_manager_prefix)(irate(envoy_http_downstream_cx_tx_bytes_total[5m]))
+  - record: envoy_http_conn_manager_prefix:envoy_http_downstream_cx_active:sum
+    expr: sum by (envoy_http_conn_manager_prefix)(envoy_http_downstream_cx_active)
+  - record: envoy_http_conn_manager_prefix:envoy_http_downstream_rq_total:sum_irate5m
+    expr: sum by (envoy_http_conn_manager_prefix)(irate(envoy_http_downstream_rq_total[5m]))
+  - record: envoy_cluster_name:envoy_cluster_membership_healthy:avg
+    expr: avg by (envoy_cluster_name)(envoy_cluster_membership_healthy)
+  - record: envoy_cluster_name:envoy_cluster_membership_total:avg
+    expr: avg by (envoy_cluster_name)(envoy_cluster_membership_total)
+
